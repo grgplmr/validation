@@ -19,6 +19,7 @@ class SPA_Post_Validation {
         add_filter('manage_post_posts_columns', [$this, 'add_validation_column']);
         add_action('manage_post_posts_custom_column', [$this, 'render_validation_column'], 10, 2);
         add_action('admin_head-edit.php', [$this, 'enqueue_admin_styles']);
+        add_action('enqueue_block_editor_assets', [$this, 'enqueue_editor_assets']);
     }
 
     public function register_metabox() {
@@ -42,7 +43,19 @@ class SPA_Post_Validation {
         return is_array($results) ? $results : [];
     }
 
-    private function normalize_approvals($approvals) {
+    public static function get_moderator_ids() {
+        $query = new WP_User_Query([
+            'role__in' => ['administrator', 'editor'],
+            'fields' => 'ID',
+        ]);
+
+        $results = $query->get_results();
+        $results = is_array($results) ? $results : [];
+
+        return array_values(array_filter(array_map('absint', $results)));
+    }
+
+    private static function normalize_approvals($approvals) {
         if (!is_array($approvals)) {
             $approvals = [];
         }
@@ -55,14 +68,14 @@ class SPA_Post_Validation {
         return array_values(array_unique($approvals));
     }
 
-    private function get_post_approvals($post_id) {
+    public static function get_post_approvals($post_id) {
         $approvals = get_post_meta($post_id, self::META_KEY, true);
-        return $this->normalize_approvals($approvals);
+        return self::normalize_approvals($approvals);
     }
 
     public function render_metabox($post) {
         $moderators = $this->get_moderators();
-        $approvals = $this->get_post_approvals($post->ID);
+        $approvals = self::get_post_approvals($post->ID);
         $total_moderators = count($moderators);
         $approvals_count = count($approvals);
         $required = (int) ceil($total_moderators / 2);
@@ -117,13 +130,17 @@ class SPA_Post_Validation {
         <?php
     }
 
-    private function current_user_is_moderator() {
-        $user = wp_get_current_user();
+    public static function user_is_moderator($user_id) {
+        $user = get_userdata($user_id);
         if (!$user || empty($user->roles)) {
             return false;
         }
 
         return !empty(array_intersect($user->roles, ['administrator', 'editor']));
+    }
+
+    private function current_user_is_moderator() {
+        return self::user_is_moderator(get_current_user_id());
     }
 
     public function handle_toggle_approval() {
@@ -133,7 +150,9 @@ class SPA_Post_Validation {
             wp_die(esc_html__('Accès refusé.', 'spa'));
         }
 
-        if (!isset($_POST['_wpnonce']) || !wp_verify_nonce($_POST['_wpnonce'], 'spa_toggle_approval_' . $post_id)) {
+        $nonce = isset($_POST['_wpnonce']) ? $_POST['_wpnonce'] : (isset($_POST['spa_nonce']) ? $_POST['spa_nonce'] : '');
+
+        if (!$nonce || !wp_verify_nonce($nonce, 'spa_toggle_approval_' . $post_id)) {
             wp_die(esc_html__('Nonce invalide.', 'spa'));
         }
 
@@ -141,7 +160,7 @@ class SPA_Post_Validation {
             wp_die(esc_html__('Vous devez être modérateur pour effectuer cette action.', 'spa'));
         }
 
-        $approvals = $this->get_post_approvals($post_id);
+        $approvals = self::get_post_approvals($post_id);
         $user_id = get_current_user_id();
 
         if (in_array($user_id, $approvals, true)) {
@@ -150,7 +169,7 @@ class SPA_Post_Validation {
             }));
         } else {
             $approvals[] = (int) $user_id;
-            $approvals = $this->normalize_approvals($approvals);
+            $approvals = self::normalize_approvals($approvals);
         }
 
         update_post_meta($post_id, self::META_KEY, $approvals);
@@ -187,7 +206,7 @@ class SPA_Post_Validation {
         }
 
         $moderators = $this->get_moderators();
-        $approvals = $this->get_post_approvals($post_id);
+        $approvals = self::get_post_approvals($post_id);
         $total_moderators = count($moderators);
         $approvals_count = count($approvals);
         $required = (int) ceil($total_moderators / 2);
@@ -224,6 +243,56 @@ class SPA_Post_Validation {
             .spa-none { color: #b32d2e; font-weight: 600; }
         </style>
         <?php
+    }
+
+    public function enqueue_editor_assets() {
+        if (!function_exists('get_current_screen')) {
+            return;
+        }
+
+        $screen = get_current_screen();
+
+        if (!$screen || 'post' !== $screen->post_type || !is_admin()) {
+            return;
+        }
+
+        $post_id = isset($_GET['post']) ? absint($_GET['post']) : get_the_ID();
+
+        if (!$post_id) {
+            return;
+        }
+
+        $moderator_ids = self::get_moderator_ids();
+        $approvals = self::get_post_approvals($post_id);
+        $total_mods = count($moderator_ids);
+        $total_approved = count($approvals);
+        $required = $total_mods > 0 ? (int) ceil($total_mods / 2) : 0;
+        $current_user_id = get_current_user_id();
+        $currentUserCanToggle = (self::user_is_moderator($current_user_id) && current_user_can('edit_post', $post_id));
+        $currentUserHasApproved = ($currentUserCanToggle && in_array($current_user_id, $approvals, true));
+
+        wp_enqueue_script(
+            'spa-validation-sidebar',
+            plugins_url('js/spa-validation-sidebar.js', __FILE__),
+            ['wp-plugins', 'wp-edit-post', 'wp-components', 'wp-element'],
+            '1.0.0',
+            true
+        );
+
+        wp_localize_script(
+            'spa-validation-sidebar',
+            'SPAValidationSidebarData',
+            [
+                'postId'                 => $post_id,
+                'totalModerators'        => $total_mods,
+                'totalApproved'          => $total_approved,
+                'required'               => $required,
+                'currentUserCanToggle'   => $currentUserCanToggle,
+                'currentUserHasApproved' => $currentUserHasApproved,
+                'toggleUrl'              => admin_url('admin-post.php'),
+                'nonce'                  => wp_create_nonce('spa_toggle_approval_' . $post_id),
+            ]
+        );
     }
 }
 
