@@ -22,6 +22,102 @@ class SPA_Post_Validation {
         add_action('manage_post_posts_custom_column', [$this, 'render_validation_column'], 10, 2);
         add_action('admin_head-edit.php', [$this, 'enqueue_admin_styles']);
         add_action('enqueue_block_editor_assets', [$this, 'enqueue_editor_assets']);
+        add_action('admin_menu', [$this, 'register_settings_page']);
+        add_action('admin_init', [$this, 'register_settings']);
+    }
+
+    public function register_settings_page() {
+        add_options_page(
+            __('Validation articles', 'spa'),
+            __('Validation articles', 'spa'),
+            'manage_options',
+            'spa-validation-settings',
+            [$this, 'render_settings_page']
+        );
+    }
+
+    public function register_settings() {
+        register_setting(
+            'spa_validation_settings',
+            'spa_validation_allowed_moderators',
+            [
+                'type' => 'array',
+                'sanitize_callback' => [$this, 'sanitize_allowed_moderators'],
+                'default' => [],
+            ]
+        );
+
+        add_settings_section(
+            'spa_validation_main_section',
+            __('Modérateurs autorisés', 'spa'),
+            function () {
+                echo '<p>' . esc_html__('Sélectionnez les administrateurs ou éditeurs autorisés à valider les articles.', 'spa') . '</p>';
+            },
+            'spa-validation-settings'
+        );
+
+        add_settings_field(
+            'spa_validation_allowed_moderators_field',
+            __('Liste blanche des modérateurs', 'spa'),
+            [$this, 'render_allowed_moderators_field'],
+            'spa-validation-settings',
+            'spa_validation_main_section'
+        );
+    }
+
+    public function sanitize_allowed_moderators($value) {
+        if (!is_array($value)) {
+            $value = [];
+        }
+
+        $value = array_map('absint', $value);
+        $value = array_filter($value, function ($id) {
+            return $id > 0;
+        });
+
+        return array_values(array_unique($value));
+    }
+
+    public function render_settings_page() {
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+        ?>
+        <div class="wrap">
+            <h1><?php echo esc_html__('Validation articles', 'spa'); ?></h1>
+            <form method="post" action="options.php">
+                <?php
+                settings_fields('spa_validation_settings');
+                do_settings_sections('spa-validation-settings');
+                submit_button();
+                ?>
+            </form>
+        </div>
+        <?php
+    }
+
+    public function render_allowed_moderators_field() {
+        $allowed = get_option('spa_validation_allowed_moderators', []);
+        $allowed = is_array($allowed) ? $allowed : [];
+        $allowed = array_map('absint', $allowed);
+
+        $users = $this->get_potential_moderators();
+
+        if (empty($users)) {
+            echo '<p>' . esc_html__('Aucun administrateur ou éditeur disponible.', 'spa') . '</p>';
+            return;
+        }
+
+        echo '<fieldset>';
+        foreach ($users as $user) {
+            $checked = in_array($user->ID, $allowed, true) ? 'checked="checked"' : '';
+            $label = sprintf('%s (%s)', $user->display_name, $user->user_email);
+            echo '<label style="display:block; margin-bottom:4px;">';
+            echo '<input type="checkbox" name="spa_validation_allowed_moderators[]" value="' . esc_attr($user->ID) . '" ' . $checked . ' /> ';
+            echo esc_html($label);
+            echo '</label>';
+        }
+        echo '</fieldset>';
     }
 
     public function register_metabox() {
@@ -39,10 +135,10 @@ class SPA_Post_Validation {
         );
     }
 
-    private function get_moderators() {
+    private function get_potential_moderators() {
         $query = new WP_User_Query([
             'role__in' => ['administrator', 'editor'],
-            'fields' => ['ID', 'display_name'],
+            'fields' => ['ID', 'display_name', 'user_email'],
         ]);
 
         $results = $query->get_results();
@@ -56,9 +152,36 @@ class SPA_Post_Validation {
         ]);
 
         $results = $query->get_results();
-        $results = is_array($results) ? $results : [];
+        $base_ids = is_array($results) ? $results : [];
+        $base_ids = array_values(array_unique(array_filter(array_map('absint', $base_ids))));
 
-        return array_values(array_filter(array_map('absint', $results)));
+        $allowed = get_option('spa_validation_allowed_moderators', []);
+        $allowed = is_array($allowed) ? $allowed : [];
+        $allowed = array_values(array_unique(array_filter(array_map('absint', $allowed))));
+
+        if (empty($allowed)) {
+            return $base_ids;
+        }
+
+        $filtered = array_intersect($base_ids, $allowed);
+
+        return array_values(array_unique(array_map('absint', $filtered)));
+    }
+
+    private function get_moderators() {
+        $moderator_ids = self::get_moderator_ids();
+
+        if (empty($moderator_ids)) {
+            return [];
+        }
+
+        $users = get_users([
+            'include' => $moderator_ids,
+            'orderby' => 'include',
+            'fields' => ['ID', 'display_name'],
+        ]);
+
+        return is_array($users) ? $users : [];
     }
 
     private static function normalize_approvals($approvals) {
@@ -158,12 +281,15 @@ class SPA_Post_Validation {
     }
 
     public static function user_is_moderator($user_id) {
-        $user = get_userdata($user_id);
-        if (!$user || empty($user->roles)) {
+        $user_id = absint($user_id);
+
+        if ($user_id <= 0) {
             return false;
         }
 
-        return !empty(array_intersect($user->roles, ['administrator', 'editor']));
+        $moderator_ids = self::get_moderator_ids();
+
+        return in_array($user_id, $moderator_ids, true);
     }
 
     private function current_user_is_moderator() {
