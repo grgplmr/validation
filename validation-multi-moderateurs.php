@@ -98,7 +98,10 @@ class SPA_Post_Validation {
 
     public function render_allowed_moderators_field() {
         $allowed = get_option('spa_validation_allowed_moderators', []);
-        $allowed = is_array($allowed) ? $allowed : [];
+        if (!is_array($allowed)) {
+            $allowed = [];
+        }
+
         $allowed = array_map('absint', $allowed);
 
         $users = $this->get_potential_moderators();
@@ -110,10 +113,9 @@ class SPA_Post_Validation {
 
         echo '<fieldset>';
         foreach ($users as $user) {
-            $checked = in_array($user->ID, $allowed, true) ? 'checked="checked"' : '';
             $label = sprintf('%s (%s)', $user->display_name, $user->user_email);
             echo '<label style="display:block; margin-bottom:4px;">';
-            echo '<input type="checkbox" name="spa_validation_allowed_moderators[]" value="' . esc_attr($user->ID) . '" ' . $checked . ' /> ';
+            echo '<input type="checkbox" name="spa_validation_allowed_moderators[]" value="' . esc_attr($user->ID) . '" ' . checked(in_array($user->ID, $allowed, true), true, false) . ' /> ';
             echo esc_html($label);
             echo '</label>';
         }
@@ -145,27 +147,30 @@ class SPA_Post_Validation {
         return is_array($results) ? $results : [];
     }
 
-    public static function get_moderator_ids() {
-        $query = new WP_User_Query([
+    public static function get_moderator_ids(): array {
+        $user_query = new WP_User_Query([
             'role__in' => ['administrator', 'editor'],
-            'fields' => 'ID',
+            'fields'   => 'ID',
         ]);
-
-        $results = $query->get_results();
-        $base_ids = is_array($results) ? $results : [];
-        $base_ids = array_values(array_unique(array_filter(array_map('absint', $base_ids))));
+        $base_ids = $user_query->get_results();
+        if (!is_array($base_ids)) {
+            $base_ids = [];
+        }
+        $base_ids = array_map('intval', $base_ids);
 
         $allowed = get_option('spa_validation_allowed_moderators', []);
-        $allowed = is_array($allowed) ? $allowed : [];
-        $allowed = array_values(array_unique(array_filter(array_map('absint', $allowed))));
+        if (!is_array($allowed)) {
+            $allowed = [];
+        }
+        $allowed = array_map('intval', $allowed);
 
         if (empty($allowed)) {
-            return $base_ids;
+            $ids = $base_ids;
+        } else {
+            $ids = array_values(array_intersect($base_ids, $allowed));
         }
 
-        $filtered = array_intersect($base_ids, $allowed);
-
-        return array_values(array_unique(array_map('absint', $filtered)));
+        return array_values(array_unique($ids));
     }
 
     private function get_moderators() {
@@ -280,16 +285,28 @@ class SPA_Post_Validation {
         <?php
     }
 
-    public static function user_is_moderator($user_id) {
-        $user_id = absint($user_id);
-
+    public static function user_is_moderator(int $user_id): bool {
         if ($user_id <= 0) {
             return false;
         }
 
-        $moderator_ids = self::get_moderator_ids();
+        $allowed = get_option('spa_validation_allowed_moderators', []);
+        if (!is_array($allowed)) {
+            $allowed = [];
+        }
+        $allowed = array_map('intval', $allowed);
 
-        return in_array($user_id, $moderator_ids, true);
+        if (!empty($allowed)) {
+            return in_array($user_id, $allowed, true);
+        }
+
+        $user = get_userdata($user_id);
+        if (!$user || empty($user->roles) || !is_array($user->roles)) {
+            return false;
+        }
+
+        return in_array('administrator', $user->roles, true)
+            || in_array('editor', $user->roles, true);
     }
 
     private function current_user_is_moderator() {
@@ -327,7 +344,9 @@ class SPA_Post_Validation {
         $required = $total_mods > 0 ? (int) ceil($total_mods / 2) : 0;
 
         $current_user_id = get_current_user_id();
-        $current_user_can_toggle = self::user_is_moderator($current_user_id) && current_user_can('edit_post', $post_id);
+        $current_user_can_toggle = $current_user_id
+            && self::user_is_moderator($current_user_id)
+            && current_user_can('edit_post', $post_id);
         $current_user_has_approved = in_array($current_user_id, $approvals, true);
         $current_user_requested_changes = in_array($current_user_id, $change_requests, true);
 
