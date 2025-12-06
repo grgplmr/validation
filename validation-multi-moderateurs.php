@@ -21,7 +21,6 @@ class SPA_Post_Validation {
         add_filter('manage_post_posts_columns', [$this, 'add_validation_column']);
         add_action('manage_post_posts_custom_column', [$this, 'render_validation_column'], 10, 2);
         add_action('admin_head-edit.php', [$this, 'enqueue_admin_styles']);
-        add_action('enqueue_block_editor_assets', [$this, 'enqueue_editor_assets']);
     }
 
     public function register_metabox() {
@@ -323,62 +322,6 @@ class SPA_Post_Validation {
             .spa-none { color: #b32d2e; font-weight: 600; }
         </style>
         <?php
-    }
-
-    public function enqueue_editor_assets() {
-        if (!function_exists('get_current_screen')) {
-            return;
-        }
-
-        $screen = get_current_screen();
-
-        if (!$screen || 'post' !== $screen->post_type || !is_admin()) {
-            return;
-        }
-
-        $post_id = isset($_GET['post']) ? absint($_GET['post']) : get_the_ID();
-
-        if (!$post_id) {
-            return;
-        }
-
-        $moderator_ids = self::get_moderator_ids();
-        $approvals = self::get_post_approvals($post_id);
-        $change_requests = self::get_post_change_requests($post_id);
-        $total_mods = count($moderator_ids);
-        $total_approved = count($approvals);
-        $total_change_requests = count($change_requests);
-        $required = $total_mods > 0 ? (int) ceil($total_mods / 2) : 0;
-        $current_user_id = get_current_user_id();
-        $currentUserCanToggle = (self::user_is_moderator($current_user_id) && current_user_can('edit_post', $post_id));
-        $currentUserHasApproved = ($currentUserCanToggle && in_array($current_user_id, $approvals, true));
-        $currentUserRequestedChanges = ($currentUserCanToggle && in_array($current_user_id, $change_requests, true));
-
-        wp_enqueue_script(
-            'spa-validation-sidebar',
-            plugins_url('js/spa-validation-sidebar.js', __FILE__),
-            ['wp-plugins', 'wp-edit-post', 'wp-components', 'wp-element'],
-            '1.0.0',
-            true
-        );
-
-        wp_localize_script(
-            'spa-validation-sidebar',
-            'SPAValidationSidebarData',
-            [
-                'postId'                 => $post_id,
-                'totalModerators'        => $total_mods,
-                'totalApproved'          => $total_approved,
-                'totalChangeRequests'    => $total_change_requests,
-                'required'               => $required,
-                'currentUserCanToggle'   => $currentUserCanToggle,
-                'currentUserHasApproved' => $currentUserHasApproved,
-                'currentUserRequestedChanges' => $currentUserRequestedChanges,
-                'toggleUrl'              => admin_url('admin-post.php'),
-                'nonce'                  => wp_create_nonce('spa_toggle_approval_' . $post_id),
-                'changeNonce'            => wp_create_nonce('spa_toggle_change_request_' . $post_id),
-            ]
-        );
     }
 }
 
