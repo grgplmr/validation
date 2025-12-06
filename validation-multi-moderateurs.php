@@ -21,9 +21,14 @@ class SPA_Post_Validation {
         add_filter('manage_post_posts_columns', [$this, 'add_validation_column']);
         add_action('manage_post_posts_custom_column', [$this, 'render_validation_column'], 10, 2);
         add_action('admin_head-edit.php', [$this, 'enqueue_admin_styles']);
+        add_action('enqueue_block_editor_assets', [$this, 'enqueue_editor_assets']);
     }
 
     public function register_metabox() {
+        if (function_exists('use_block_editor_for_post_type') && use_block_editor_for_post_type('post')) {
+            return;
+        }
+
         add_meta_box(
             'spa_post_validation',
             __('Validations des modérateurs', 'spa'),
@@ -163,6 +168,88 @@ class SPA_Post_Validation {
 
     private function current_user_is_moderator() {
         return self::user_is_moderator(get_current_user_id());
+    }
+
+    public function enqueue_editor_assets() {
+        $screen = get_current_screen();
+
+        if (!$screen || 'post' !== $screen->base || 'post' !== $screen->post_type) {
+            return;
+        }
+
+        if (function_exists('use_block_editor_for_post_type') && !use_block_editor_for_post_type('post')) {
+            return;
+        }
+
+        $post_id = isset($_GET['post']) ? absint($_GET['post']) : 0;
+
+        if (!$post_id && isset($GLOBALS['post']) && $GLOBALS['post'] instanceof WP_Post) {
+            $post_id = (int) $GLOBALS['post']->ID;
+        }
+
+        if (!$post_id) {
+            return;
+        }
+
+        $moderator_ids = self::get_moderator_ids();
+        $approvals = self::get_post_approvals($post_id);
+        $change_requests = self::get_post_change_requests($post_id);
+
+        $total_mods = count($moderator_ids);
+        $total_approved = count($approvals);
+        $total_change_requests = count($change_requests);
+        $required = $total_mods > 0 ? (int) ceil($total_mods / 2) : 0;
+
+        $current_user_id = get_current_user_id();
+        $current_user_can_toggle = self::user_is_moderator($current_user_id) && current_user_can('edit_post', $post_id);
+        $current_user_has_approved = in_array($current_user_id, $approvals, true);
+        $current_user_requested_changes = in_array($current_user_id, $change_requests, true);
+
+        $moderators_array = [];
+
+        foreach ($moderator_ids as $uid) {
+            $user = get_userdata($uid);
+            if (!$user) {
+                continue;
+            }
+
+            $status = 'pending';
+
+            if (in_array($uid, $approvals, true)) {
+                $status = 'approved';
+            } elseif (in_array($uid, $change_requests, true)) {
+                $status = 'change';
+            }
+
+            $moderators_array[] = [
+                'id'     => (int) $uid,
+                'name'   => $user->display_name,
+                'status' => $status,
+            ];
+        }
+
+        wp_enqueue_script(
+            'spa-validation-sidebar',
+            plugins_url('js/spa-validation-sidebar.js', __FILE__),
+            ['wp-plugins', 'wp-edit-post', 'wp-components', 'wp-element'],
+            '1.0.0',
+            true
+        );
+
+        wp_localize_script('spa-validation-sidebar', 'SPAValidationSidebarData', [
+            'postId'                     => $post_id,
+            'totalModerators'            => $total_mods,
+            'totalApproved'              => $total_approved,
+            'totalChangeRequests'        => $total_change_requests,
+            'required'                   => $required,
+            'currentUserCanToggle'       => $current_user_can_toggle,
+            'currentUserHasApproved'     => $current_user_has_approved,
+            'currentUserRequestedChanges' => $current_user_requested_changes,
+            'moderators'                 => $moderators_array,
+            'toggleUrl'                  => admin_url('admin-post.php'),
+            'approvalNonce'              => wp_create_nonce('spa_toggle_approval_' . $post_id),
+            'changeNonce'                => wp_create_nonce('spa_toggle_change_request_' . $post_id),
+        ]);
     }
 
     public function handle_toggle_approval() {
