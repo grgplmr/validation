@@ -321,6 +321,11 @@ class SPA_Post_Validation {
             return;
         }
 
+        $post = get_post($post_id);
+        if (!$post instanceof WP_Post) {
+            return;
+        }
+
         $moderator_ids = self::get_moderator_ids();
         $approvals = self::get_post_approvals($post_id);
         $change_requests = self::get_post_change_requests($post_id);
@@ -331,10 +336,12 @@ class SPA_Post_Validation {
         $total_change_requests = count($change_requests);
         $required = $total_mods > 0 ? (int) ceil($total_mods / 2) : 0;
 
+        $post_author_id = (int) $post->post_author;
         $current_user_id = get_current_user_id();
         $current_user_can_toggle = $current_user_id
             && self::user_is_moderator($current_user_id)
             && current_user_can('edit_post', $post_id);
+        $current_user_is_author = ($current_user_id > 0 && $current_user_id === $post_author_id);
         $current_user_has_approved = in_array($current_user_id, $approvals, true);
         $current_user_requested_changes = in_array($current_user_id, $change_requests, true);
 
@@ -376,6 +383,7 @@ class SPA_Post_Validation {
             'totalChangeRequests'         => $total_change_requests,
             'required'                    => $required,
             'currentUserCanToggle'        => $current_user_can_toggle,
+            'currentUserIsAuthor'         => $current_user_is_author,
             'currentUserHasApproved'      => $current_user_has_approved,
             'currentUserRequestedChanges' => $current_user_requested_changes,
             'moderators'                  => $moderators_array,
@@ -384,6 +392,7 @@ class SPA_Post_Validation {
             'changeNonce'                 => wp_create_nonce('spa_toggle_change_request_' . $post_id),
             'changesDoneNonce'            => wp_create_nonce('spa_notify_changes_done_' . $post_id),
             'changesDoneLast'             => $changes_done_last,
+            'postAuthorId'                => $post_author_id,
         ]);
     }
 
@@ -497,12 +506,17 @@ class SPA_Post_Validation {
             wp_die(esc_html__('Nonce invalide.', 'spa'));
         }
 
-        if (!$this->current_user_is_moderator()) {
-            wp_die(esc_html__('Vous devez être modérateur pour effectuer cette action.', 'spa'));
+        $post = get_post($post_id);
+        if (!$post) {
+            wp_die('Article introuvable.');
+        }
+
+        $current_user_id = get_current_user_id();
+        if ((int) $post->post_author !== (int) $current_user_id) {
+            wp_die('Seul l\'auteur de l\'article peut signaler que les modifications ont été effectuées.');
         }
 
         $change_request_ids = self::get_post_change_requests($post_id);
-        $post = get_post($post_id);
         $current_user = wp_get_current_user();
         $edit_link = get_edit_post_link($post_id, '');
 
