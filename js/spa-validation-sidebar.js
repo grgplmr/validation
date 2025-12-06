@@ -9,6 +9,7 @@
     const { createElement: el, Fragment } = window.wp.element;
 
     const data = window.SPAValidationSidebarData;
+    const isAuthor = data.currentUserIsAuthor;
 
     const statusColors = {
         ok: '#008000',
@@ -129,40 +130,50 @@
         };
 
         const renderButtons = () => {
-            if (!data.currentUserCanToggle) {
+            const buttons = [];
+
+            if (data.currentUserCanToggle) {
+                buttons.push(
+                    el(
+                        Button,
+                        {
+                            style: { ...buttonBaseStyle, backgroundColor: '#2cd81f', borderColor: '#2cd81f' },
+                            onClick: () => createFormAndSubmit('spa_toggle_approval', data.approvalNonce),
+                        },
+                        data.currentUserHasApproved ? 'Retirer mon approbation' : 'Approuver cet article'
+                    )
+                );
+
+                buttons.push(
+                    el(
+                        Button,
+                        {
+                            style: { ...buttonBaseStyle, backgroundColor: '#ff4e00', borderColor: '#ff4e00' },
+                            onClick: () => createFormAndSubmit('spa_toggle_change_request', data.changeNonce),
+                        },
+                        data.currentUserRequestedChanges ? 'Retirer la demande de modification' : 'Modifier cet article'
+                    )
+                );
+            }
+
+            if (isAuthor && data.totalChangeRequests > 0) {
+                buttons.push(
+                    el(
+                        Button,
+                        {
+                            style: { ...buttonBaseStyle, backgroundColor: '#0073aa', borderColor: '#0073aa' },
+                            onClick: () => createFormAndSubmit('spa_notify_changes_done', data.changesDoneNonce),
+                        },
+                        'Modifications effectuées'
+                    )
+                );
+            }
+
+            if (buttons.length === 0) {
                 return null;
             }
 
-            return el(
-                'div',
-                { style: { marginTop: '12px' } },
-                el(
-                    Button,
-                    {
-                        style: { ...buttonBaseStyle, backgroundColor: '#2cd81f', borderColor: '#2cd81f' },
-                        onClick: () => createFormAndSubmit('spa_toggle_approval', data.approvalNonce),
-                    },
-                    data.currentUserHasApproved ? 'Retirer mon approbation' : 'Approuver cet article'
-                ),
-                el(
-                    Button,
-                    {
-                        style: { ...buttonBaseStyle, backgroundColor: '#ff4e00', borderColor: '#ff4e00' },
-                        onClick: () => createFormAndSubmit('spa_toggle_change_request', data.changeNonce),
-                    },
-                    data.currentUserRequestedChanges ? 'Retirer la demande de modification' : 'Modifier cet article'
-                ),
-                data.totalChangeRequests > 0
-                    ? el(
-                          Button,
-                          {
-                              style: { ...buttonBaseStyle, backgroundColor: '#0073aa', borderColor: '#0073aa' },
-                              onClick: () => createFormAndSubmit('spa_notify_changes_done', data.changesDoneNonce),
-                          },
-                          'Modifications effectuées'
-                      )
-                    : null
-            );
+            return el('div', { style: { marginTop: '12px' } }, el(Fragment, null, buttons));
         };
 
         return el(
