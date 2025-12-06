@@ -13,17 +13,18 @@ if (!defined('ABSPATH')) {
 class SPA_Post_Validation {
     const META_KEY = '_spa_approvals';
     const META_KEY_CHANGES = '_spa_change_requests';
+    const META_KEY_CHANGES_DONE = '_spa_changes_done_last';
 
     public function __construct() {
         add_action('add_meta_boxes', [$this, 'register_metabox']);
         add_action('admin_post_spa_toggle_approval', [$this, 'handle_toggle_approval']);
         add_action('admin_post_spa_toggle_change_request', [$this, 'handle_toggle_change_request']);
+        add_action('admin_post_spa_notify_changes_done', [$this, 'handle_notify_changes_done']);
         add_filter('manage_post_posts_columns', [$this, 'add_validation_column']);
         add_action('manage_post_posts_custom_column', [$this, 'render_validation_column'], 10, 2);
         add_action('admin_head-edit.php', [$this, 'enqueue_admin_styles']);
         add_action('enqueue_block_editor_assets', [$this, 'enqueue_editor_assets']);
         add_action('admin_menu', [$this, 'register_settings_page']);
-        add_action('admin_init', [$this, 'handle_settings_save']);
     }
 
     public function register_settings_page() {
@@ -36,98 +37,62 @@ class SPA_Post_Validation {
         );
     }
 
-    public function handle_settings_save() {
-        if (!isset($_POST['spa_validation_save_moderators'])) {
-            return;
-        }
-
-        if (!current_user_can('manage_options')) {
-            return;
-        }
-
-        check_admin_referer('spa_validation_save_moderators_action', 'spa_validation_nonce');
-
-        $ids = isset($_POST['spa_validation_allowed_moderators'])
-            ? (array) $_POST['spa_validation_allowed_moderators']
-            : [];
-
-        $ids = array_map('intval', $ids);
-        $ids = array_filter($ids, function ($id) {
-            return $id > 0;
-        });
-        $ids = array_values(array_unique($ids));
-
-        update_option('spa_validation_allowed_moderators', $ids);
-
-        add_settings_error(
-            'spa_validation_messages',
-            'spa_validation_saved',
-            esc_html__('Paramètres mis à jour.', 'spa'),
-            'updated'
-        );
-
-        $redirect_url = add_query_arg(
-            [
-                'page' => 'spa-validation-settings',
-                'settings-updated' => 'true',
-            ],
-            admin_url('options-general.php')
-        );
-
-        wp_safe_redirect($redirect_url);
-        exit;
-    }
-
     public function render_settings_page() {
         if (!current_user_can('manage_options')) {
             return;
         }
-        settings_errors('spa_validation_messages');
+
+        if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+            check_admin_referer('spa_validation_save_moderators_action', 'spa_validation_nonce');
+
+            $ids = isset($_POST['spa_validation_allowed_moderators'])
+                ? (array) $_POST['spa_validation_allowed_moderators']
+                : [];
+            $ids = array_map('intval', $ids);
+            $ids = array_values(array_unique($ids));
+
+            update_option('spa_validation_allowed_moderators', $ids);
+
+            echo '<div class="updated notice"><p>' . esc_html__('Paramètres mis à jour.', 'spa') . '</p></div>';
+        }
+
+        $allowed = get_option('spa_validation_allowed_moderators', []);
+        if (!is_array($allowed)) {
+            $allowed = [];
+        }
+        $allowed = array_map('intval', $allowed);
+
+        $user_query = new WP_User_Query([
+            'role__in' => ['administrator', 'editor'],
+            'orderby'  => 'display_name',
+            'order'    => 'ASC',
+        ]);
+
         ?>
         <div class="wrap">
             <h1><?php echo esc_html__('Validation articles', 'spa'); ?></h1>
             <form method="post" action="">
+                <?php wp_nonce_field('spa_validation_save_moderators_action', 'spa_validation_nonce'); ?>
+                <h2><?php echo esc_html__('Modérateurs autorisés', 'spa'); ?></h2>
+                <p><?php echo esc_html__('Sélectionnez les administrateurs ou éditeurs autorisés à valider les articles.', 'spa'); ?></p>
                 <?php
-                wp_nonce_field('spa_validation_save_moderators_action', 'spa_validation_nonce');
-                echo '<input type="hidden" name="spa_validation_save_moderators" value="1" />';
-                echo '<h2>' . esc_html__('Modérateurs autorisés', 'spa') . '</h2>';
-                echo '<p>' . esc_html__('Sélectionnez les administrateurs ou éditeurs autorisés à valider les articles.', 'spa') . '</p>';
-                $this->render_allowed_moderators_field();
+                if (!empty($user_query->get_results())) {
+                    foreach ($user_query->get_results() as $user) {
+                        $user_id = (int) $user->ID;
+                        $checked = in_array($user_id, $allowed, true) ? 'checked="checked"' : '';
+                        echo '<label style="display:block;margin-bottom:4px;">';
+                        echo '<input type="checkbox" name="spa_validation_allowed_moderators[]" value="' . esc_attr($user_id) . '" ' . $checked . ' />';
+                        echo ' ' . esc_html($user->display_name) . ' (' . esc_html($user->user_email) . ')';
+                        echo '</label>';
+                    }
+                } else {
+                    echo '<p>' . esc_html__('Aucun administrateur ou éditeur disponible.', 'spa') . '</p>';
+                }
                 submit_button(__('Enregistrer les modifications', 'spa'));
                 ?>
             </form>
         </div>
         <?php
-    }
-
-    public function render_allowed_moderators_field() {
-        $allowed = get_option('spa_validation_allowed_moderators', []);
-        if (!is_array($allowed)) {
-            $allowed = [];
-        }
-
-        $allowed = array_map('intval', $allowed);
-        $allowed = array_filter($allowed, function ($id) {
-            return $id > 0;
-        });
-        $allowed = array_values(array_unique($allowed));
-
-        $users = $this->get_potential_moderators();
-
-        if (empty($users)) {
-            echo '<p>' . esc_html__('Aucun administrateur ou éditeur disponible.', 'spa') . '</p>';
-            return;
-        }
-
-        echo '<fieldset>';
-        foreach ($users as $user) {
-            $label = sprintf('%s (%s)', $user->display_name, $user->user_email);
-            echo '<label style="display:block; margin-bottom:4px;">';
-            echo '<input type="checkbox" name="spa_validation_allowed_moderators[]" value="' . esc_attr($user->ID) . '" ' . checked(in_array($user->ID, $allowed, true), true, false) . ' /> ';
-            echo esc_html($label);
-            echo '</label>';
-        }
-        echo '</fieldset>';
     }
 
     public function register_metabox() {
@@ -167,9 +132,6 @@ class SPA_Post_Validation {
             $base_ids = [];
         }
         $base_ids = array_map('intval', $base_ids);
-        $base_ids = array_filter($base_ids, function ($id) {
-            return $id > 0;
-        });
         $base_ids = array_values(array_unique($base_ids));
 
         $allowed = get_option('spa_validation_allowed_moderators', []);
@@ -177,10 +139,6 @@ class SPA_Post_Validation {
             $allowed = [];
         }
         $allowed = array_map('intval', $allowed);
-        $allowed = array_filter($allowed, function ($id) {
-            return $id > 0;
-        });
-        $allowed = array_values(array_unique($allowed));
 
         if (empty($allowed)) {
             $ids = $base_ids;
@@ -239,6 +197,7 @@ class SPA_Post_Validation {
         $change_requests_count = count($change_requests);
         $required = (int) ceil($total_moderators / 2);
         $has_threshold = $approvals_count >= $required && $total_moderators > 0;
+        $button_base_style = 'display:block;width:100%;max-width:260px;margin-bottom:2px;color:#ffffff;';
         ?>
         <p><strong><?php echo esc_html__('Validations', 'spa'); ?>:</strong> <?php echo esc_html($approvals_count . ' / ' . $total_moderators); ?></p>
         <p><?php echo esc_html__('Seuil requis', 'spa'); ?>: <?php echo esc_html($required); ?> <?php echo esc_html__('validation(s) minimum.', 'spa'); ?></p>
@@ -287,18 +246,28 @@ class SPA_Post_Validation {
                 <?php wp_nonce_field('spa_toggle_approval_' . $post->ID, 'spa_nonce'); ?>
                 <input type="hidden" name="action" value="spa_toggle_approval" />
                 <input type="hidden" name="post_id" value="<?php echo esc_attr($post->ID); ?>" />
-                <button type="submit" class="button" style="background-color:#2cd81f; border-color:#2cd81f; color:#ffffff; margin-right: 8px;">
+                <button type="submit" class="button" style="<?php echo esc_attr($button_base_style . 'background-color:#2cd81f;border-color:#2cd81f;'); ?>">
                     <?php echo esc_html($user_has_approved ? __('Retirer mon approbation', 'spa') : __('Approuver cet article', 'spa')); ?>
                 </button>
             </form>
-            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-top: 8px;">
+            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                 <?php wp_nonce_field('spa_toggle_change_request_' . $post->ID, 'spa_nonce'); ?>
                 <input type="hidden" name="action" value="spa_toggle_change_request" />
                 <input type="hidden" name="post_id" value="<?php echo esc_attr($post->ID); ?>" />
-                <button type="submit" class="button" style="background-color:#ff4e00; border-color:#ff4e00; color:#ffffff;">
+                <button type="submit" class="button" style="<?php echo esc_attr($button_base_style . 'background-color:#ff4e00;border-color:#ff4e00;'); ?>">
                     <?php echo esc_html($user_requested_change ? __('Retirer la demande de modification', 'spa') : __('Modifier cet article', 'spa')); ?>
                 </button>
             </form>
+            <?php if ($change_requests_count > 0) : ?>
+                <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                    <?php wp_nonce_field('spa_notify_changes_done_' . $post->ID, 'spa_nonce'); ?>
+                    <input type="hidden" name="action" value="spa_notify_changes_done" />
+                    <input type="hidden" name="post_id" value="<?php echo esc_attr($post->ID); ?>" />
+                    <button type="submit" class="button" style="<?php echo esc_attr($button_base_style . 'background-color:#0073aa;border-color:#0073aa;'); ?>">
+                        <?php echo esc_html__('Modifications effectuées', 'spa'); ?>
+                    </button>
+                </form>
+            <?php endif; ?>
         <?php endif; ?>
         <?php
     }
@@ -355,6 +324,7 @@ class SPA_Post_Validation {
         $moderator_ids = self::get_moderator_ids();
         $approvals = self::get_post_approvals($post_id);
         $change_requests = self::get_post_change_requests($post_id);
+        $changes_done_last = get_post_meta($post_id, self::META_KEY_CHANGES_DONE, true);
 
         $total_mods = count($moderator_ids);
         $total_approved = count($approvals);
@@ -400,18 +370,20 @@ class SPA_Post_Validation {
         );
 
         wp_localize_script('spa-validation-sidebar', 'SPAValidationSidebarData', [
-            'postId'                     => $post_id,
-            'totalModerators'            => $total_mods,
-            'totalApproved'              => $total_approved,
-            'totalChangeRequests'        => $total_change_requests,
-            'required'                   => $required,
-            'currentUserCanToggle'       => $current_user_can_toggle,
-            'currentUserHasApproved'     => $current_user_has_approved,
+            'postId'                      => $post_id,
+            'totalModerators'             => $total_mods,
+            'totalApproved'               => $total_approved,
+            'totalChangeRequests'         => $total_change_requests,
+            'required'                    => $required,
+            'currentUserCanToggle'        => $current_user_can_toggle,
+            'currentUserHasApproved'      => $current_user_has_approved,
             'currentUserRequestedChanges' => $current_user_requested_changes,
-            'moderators'                 => $moderators_array,
-            'toggleUrl'                  => admin_url('admin-post.php'),
-            'approvalNonce'              => wp_create_nonce('spa_toggle_approval_' . $post_id),
-            'changeNonce'                => wp_create_nonce('spa_toggle_change_request_' . $post_id),
+            'moderators'                  => $moderators_array,
+            'toggleUrl'                   => admin_url('admin-post.php'),
+            'approvalNonce'               => wp_create_nonce('spa_toggle_approval_' . $post_id),
+            'changeNonce'                 => wp_create_nonce('spa_toggle_change_request_' . $post_id),
+            'changesDoneNonce'            => wp_create_nonce('spa_notify_changes_done_' . $post_id),
+            'changesDoneLast'             => $changes_done_last,
         ]);
     }
 
@@ -502,6 +474,66 @@ class SPA_Post_Validation {
 
         update_post_meta($post_id, self::META_KEY_CHANGES, $change_requests);
         update_post_meta($post_id, self::META_KEY, $approvals);
+
+        $redirect = get_edit_post_link($post_id, '');
+        if ($redirect) {
+            wp_safe_redirect($redirect);
+            exit;
+        }
+
+        wp_safe_redirect(admin_url('edit.php'));
+        exit;
+    }
+
+    public function handle_notify_changes_done() {
+        $post_id = isset($_POST['post_id']) ? absint($_POST['post_id']) : 0;
+
+        if (!$post_id || !current_user_can('edit_post', $post_id)) {
+            wp_die(esc_html__('Accès refusé.', 'spa'));
+        }
+
+        $nonce = isset($_POST['spa_nonce']) ? $_POST['spa_nonce'] : '';
+        if (!$nonce || !wp_verify_nonce($nonce, 'spa_notify_changes_done_' . $post_id)) {
+            wp_die(esc_html__('Nonce invalide.', 'spa'));
+        }
+
+        if (!$this->current_user_is_moderator()) {
+            wp_die(esc_html__('Vous devez être modérateur pour effectuer cette action.', 'spa'));
+        }
+
+        $change_request_ids = self::get_post_change_requests($post_id);
+        $post = get_post($post_id);
+        $current_user = wp_get_current_user();
+        $edit_link = get_edit_post_link($post_id, '');
+
+        if ($post && !empty($change_request_ids)) {
+            foreach ($change_request_ids as $uid) {
+                $user = get_userdata($uid);
+                if (!$user || empty($user->user_email)) {
+                    continue;
+                }
+
+                $subject = sprintf('[Validation article] Modifications effectuées sur « %s »', $post->post_title);
+                $message_lines = [
+                    sprintf(__('Bonjour %s,', 'spa'), $user->display_name),
+                    __('L’auteur a indiqué avoir terminé les modifications demandées.', 'spa'),
+                    sprintf(__('Article : %s', 'spa'), $post->post_title),
+                ];
+
+                if ($edit_link) {
+                    $message_lines[] = sprintf(__('Lien de modification : %s', 'spa'), $edit_link);
+                }
+
+                if ($current_user && $current_user->exists()) {
+                    $message_lines[] = sprintf(__('Signalé par : %s', 'spa'), $current_user->display_name);
+                }
+
+                $message = implode("\n\n", $message_lines);
+                wp_mail($user->user_email, $subject, $message);
+            }
+        }
+
+        update_post_meta($post_id, self::META_KEY_CHANGES_DONE, current_time('timestamp'));
 
         $redirect = get_edit_post_link($post_id, '');
         if ($redirect) {

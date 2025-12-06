@@ -19,6 +19,14 @@
         change: '#ff4e00',
     };
 
+    const buttonBaseStyle = {
+        display: 'block',
+        width: '100%',
+        maxWidth: '260px',
+        marginBottom: '2px',
+        color: '#ffffff',
+    };
+
     const buildStatus = () => {
         if (data.totalModerators === 0) {
             return {
@@ -45,6 +53,18 @@
             text: 'Validations insuffisantes.',
             color: statusColors.error,
         };
+    };
+
+    const formatTimestamp = (ts) => {
+        if (!ts) {
+            return null;
+        }
+        const date = new Date(parseInt(ts, 10) * 1000);
+        if (Number.isNaN(date.getTime())) {
+            return null;
+        }
+        const pad = (n) => (n < 10 ? `0${n}` : `${n}`);
+        return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
     };
 
     const createFormAndSubmit = (action, nonce) => {
@@ -76,6 +96,7 @@
 
     const ValidationPanel = () => {
         const status = buildStatus();
+        const formattedChangesDone = formatTimestamp(data.changesDoneLast);
 
         const renderModerators = () => {
             if (!Array.isArray(data.moderators)) {
@@ -118,12 +139,7 @@
                 el(
                     Button,
                     {
-                        style: {
-                            backgroundColor: '#2cd81f',
-                            borderColor: '#2cd81f',
-                            color: '#ffffff',
-                            marginRight: '8px',
-                        },
+                        style: { ...buttonBaseStyle, backgroundColor: '#2cd81f', borderColor: '#2cd81f' },
                         onClick: () => createFormAndSubmit('spa_toggle_approval', data.approvalNonce),
                     },
                     data.currentUserHasApproved ? 'Retirer mon approbation' : 'Approuver cet article'
@@ -131,15 +147,21 @@
                 el(
                     Button,
                     {
-                        style: {
-                            backgroundColor: '#ff4e00',
-                            borderColor: '#ff4e00',
-                            color: '#ffffff',
-                        },
+                        style: { ...buttonBaseStyle, backgroundColor: '#ff4e00', borderColor: '#ff4e00' },
                         onClick: () => createFormAndSubmit('spa_toggle_change_request', data.changeNonce),
                     },
                     data.currentUserRequestedChanges ? 'Retirer la demande de modification' : 'Modifier cet article'
-                )
+                ),
+                data.totalChangeRequests > 0
+                    ? el(
+                          Button,
+                          {
+                              style: { ...buttonBaseStyle, backgroundColor: '#0073aa', borderColor: '#0073aa' },
+                              onClick: () => createFormAndSubmit('spa_notify_changes_done', data.changesDoneNonce),
+                          },
+                          'Modifications effectuées'
+                      )
+                    : null
             );
         };
 
@@ -150,10 +172,15 @@
                 title: 'Validations des modérateurs',
                 className: 'spa-validation-panel',
             },
-            el(Fragment, null,
+            el(
+                Fragment,
+                null,
                 el('p', null, `Validations : ${data.totalApproved} / ${data.totalModerators}`),
                 el('p', null, `Seuil requis : ${data.required} validation(s) minimum.`),
                 el('p', { style: { fontWeight: 'bold', color: status.color } }, status.text),
+                formattedChangesDone
+                    ? el('p', { style: { marginTop: '-4px', color: '#555d66' } }, `Dernière notification de modifications effectuées : ${formattedChangesDone}`)
+                    : null,
                 renderModerators(),
                 renderButtons()
             )
