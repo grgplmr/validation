@@ -1,0 +1,7 @@
+# Selection Renamer
+#
+# Aucune dependance externe requise.
+# Tkinter est inclus dans la distribution standard de Python 3.10+.
+#
+# Pour generer un executable Windows (optionnel) :
+# pip install pyinstaller

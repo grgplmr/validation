@@ -5,3 +5,17 @@ vendor/
 *.tmp
 *.bak
 *.swp
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.spec
+.venv/
+venv/
+
+# Selection Renamer
+selection_renamer_log.csv
